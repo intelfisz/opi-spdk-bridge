@@ -20,6 +20,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/opiproject/gospdk/spdk"
+	"net/http"
 )
 
 type Rectangle struct {
@@ -31,6 +32,18 @@ func (r *Rectangle) containsBad(x, y float64) bool {
 		y <= y &&
 		x <= r.x+r.width &&
 		y <= r.y+r.height
+}
+
+// RW Sandbox Vunerablity
+func serve() {
+	http.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		user := "user"
+		pw := r.Form.Get("password")
+
+		log.Printf("Registering new user %s with password %s.\n", user, pw)
+	})
+	http.ListenAndServe(":80", nil)
 }
 
 // ExtractPagination is a helper function for List pagination to fetch PageSize and PageToken
