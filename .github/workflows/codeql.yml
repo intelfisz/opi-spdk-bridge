@@ -6,6 +6,7 @@ on:
 
   pull_request:
     branches: [ main ]
+
 jobs:
   CodeQL-Build:
     # CodeQL runs on ubuntu-latest
@@ -27,3 +28,16 @@ jobs:
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v2
+
+      - name: Generate Security Report
+        uses: rsdmike/github-security-report-action@v3.0.4
+        with:
+          template: report
+          token: ${{ secrets.SECURITY_TOKEN }}
+
+      - name: GitHub Upload Release Artifacts
+        uses: actions/upload-artifact@v2
+        with:
+          name: report
+          path: |
+           ./codeql-report.pdf
