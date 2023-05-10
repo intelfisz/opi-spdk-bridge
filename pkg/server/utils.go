@@ -22,6 +22,23 @@ import (
 	"github.com/opiproject/gospdk/spdk"
 )
 
+func encodeHexMacAddress(addr []byte) (uint32, error) {
+
+    intAddr := make([]byte, hex.EncodedLen(len(addr)))
+
+    hex.Encode(intAddr, addr)
+
+    parseAddr, err := strconv.ParseInt(string(intAddr[:]), 16, 64)
+
+    if err != nil {
+
+        return 0, fmt.Errorf("error parsing mac address: %v", err)
+
+    }
+
+    return uint32(parseAddr), nil
+}
+
 // ExtractPagination is a helper function for List pagination to fetch PageSize and PageToken
 func ExtractPagination(pageSize int32, pageToken string, pagination map[string]int) (size int, offset int, err error) {
 	const (
