@@ -22,21 +22,15 @@ import (
 	"github.com/opiproject/gospdk/spdk"
 )
 
-func encodeHexMacAddress(addr []byte) (uint32, error) {
+type Rectangle struct {
+	x, y, width, height float64
+}
 
-    intAddr := make([]byte, hex.EncodedLen(len(addr)))
-
-    hex.Encode(intAddr, addr)
-
-    parseAddr, err := strconv.ParseInt(string(intAddr[:]), 16, 64)
-
-    if err != nil {
-
-        return 0, fmt.Errorf("error parsing mac address: %v", err)
-
-    }
-
-    return uint32(parseAddr), nil
+func (r *Rectangle) containsBad(x, y float64) bool {
+	return r.x <= x &&
+		y <= y &&
+		x <= r.x+r.width &&
+		y <= r.y+r.height
 }
 
 // ExtractPagination is a helper function for List pagination to fetch PageSize and PageToken
