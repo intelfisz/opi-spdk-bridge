@@ -1,6 +1,8 @@
 name: 'CodeQL'
 
 on:
+  workflow_dispatch:
+  workflow_call:
   push:
     branches: [ main ]
 
@@ -29,6 +31,7 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v2
 
+      # Create and upload for viewing a human-readable report
       - name: Generate Security Report
         uses: rsdmike/github-security-report-action@v3.0.4
         with:
@@ -40,4 +43,4 @@ jobs:
         with:
           name: report
           path: |
-           ./codeql-report.pdf
+           ./report.pdf
