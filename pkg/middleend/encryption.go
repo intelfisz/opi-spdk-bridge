@@ -10,24 +10,59 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"path"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/opiproject/gospdk/spdk"
-	pc "github.com/opiproject/opi-api/common/v1/gen/go"
 	pb "github.com/opiproject/opi-api/storage/v1alpha1/gen/go"
 	"github.com/opiproject/opi-spdk-bridge/pkg/server"
-	"github.com/ulule/deepcopier"
+
+	"go.einride.tech/aip/fieldbehavior"
+	"go.einride.tech/aip/resourceid"
+	"go.einride.tech/aip/resourcename"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+func sortEncryptedVolumes(volumes []*pb.EncryptedVolume) {
+	sort.Slice(volumes, func(i int, j int) bool {
+		return volumes[i].Name < volumes[j].Name
+	})
+}
+
 // CreateEncryptedVolume creates an encrypted volume
 func (s *Server) CreateEncryptedVolume(_ context.Context, in *pb.CreateEncryptedVolumeRequest) (*pb.EncryptedVolume, error) {
 	log.Printf("CreateEncryptedVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// see https://google.aip.dev/133#user-specified-ids
+	resourceID := resourceid.NewSystemGenerated()
+	if in.EncryptedVolumeId != "" {
+		err := resourceid.ValidateUserSettable(in.EncryptedVolumeId)
+		if err != nil {
+			log.Printf("error: %v", err)
+			return nil, err
+		}
+		log.Printf("client provided the ID of a resource %v, ignoring the name field %v", in.EncryptedVolumeId, in.EncryptedVolume.Name)
+		resourceID = in.EncryptedVolumeId
+	}
+	in.EncryptedVolume.Name = server.ResourceIDToVolumeName(resourceID)
+
 	if err := s.verifyEncryptedVolume(in.EncryptedVolume); err != nil {
 		log.Printf("error: %v", err)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	// idempotent API when called with same key, should return same object
+	volume, ok := s.volumes.encVolumes[in.EncryptedVolume.Name]
+	if ok {
+		log.Printf("Already existing EncryptedVolume with id %v", in.EncryptedVolume.Name)
+		return volume, nil
 	}
 
 	// first create a key
@@ -46,9 +81,9 @@ func (s *Server) CreateEncryptedVolume(_ context.Context, in *pb.CreateEncrypted
 	}
 	// create bdev now
 	params := spdk.BdevCryptoCreateParams{
-		Name:         in.EncryptedVolume.EncryptedVolumeId.Value,
+		Name:         resourceID,
 		BaseBdevName: in.EncryptedVolume.VolumeId.Value,
-		KeyName:      in.EncryptedVolume.EncryptedVolumeId.Value,
+		KeyName:      resourceID,
 	}
 	var result spdk.BdevCryptoCreateResult
 	err := s.rpc.Call("bdev_crypto_create", &params, &result)
@@ -58,24 +93,42 @@ func (s *Server) CreateEncryptedVolume(_ context.Context, in *pb.CreateEncrypted
 	}
 	log.Printf("Received from SPDK: %v", result)
 	if result == "" {
-		msg := fmt.Sprintf("Could not create Crypto Dev: %s", in.EncryptedVolume.EncryptedVolumeId.Value)
+		msg := fmt.Sprintf("Could not create Crypto Dev: %s", params.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
-	response := &pb.EncryptedVolume{}
-	err = deepcopier.Copy(in.EncryptedVolume).To(response)
-	if err != nil {
-		log.Printf("error: %v", err)
-		return nil, err
-	}
+	response := server.ProtoClone(in.EncryptedVolume)
+	s.volumes.encVolumes[in.EncryptedVolume.Name] = response
+	log.Printf("CreateEncryptedVolume: Sending to client: %v", response)
 	return response, nil
 }
 
 // DeleteEncryptedVolume deletes an encrypted volume
 func (s *Server) DeleteEncryptedVolume(_ context.Context, in *pb.DeleteEncryptedVolumeRequest) (*emptypb.Empty, error) {
 	log.Printf("DeleteEncryptedVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
+	volume, ok := s.volumes.encVolumes[in.Name]
+	if !ok {
+		if in.AllowMissing {
+			return &emptypb.Empty{}, nil
+		}
+		err := status.Errorf(codes.NotFound, "unable to find key %s", in.Name)
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	resourceID := path.Base(volume.Name)
 	bdevCryptoDeleteParams := spdk.BdevCryptoDeleteParams{
-		Name: in.Name,
+		Name: resourceID,
 	}
 	var bdevCryptoDeleteResult spdk.BdevCryptoDeleteResult
 	err := s.rpc.Call("bdev_crypto_delete", &bdevCryptoDeleteParams, &bdevCryptoDeleteResult)
@@ -85,13 +138,13 @@ func (s *Server) DeleteEncryptedVolume(_ context.Context, in *pb.DeleteEncrypted
 	}
 	log.Printf("Received from SPDK: %v", bdevCryptoDeleteResult)
 	if !bdevCryptoDeleteResult {
-		msg := fmt.Sprintf("Could not delete Crypto: %s", in.Name)
+		msg := fmt.Sprintf("Could not delete Crypto: %s", bdevCryptoDeleteParams.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
 
 	keyDestroyParams := spdk.AccelCryptoKeyDestroyParams{
-		KeyName: in.Name,
+		KeyName: resourceID,
 	}
 	var keyDestroyResult spdk.AccelCryptoKeyDestroyResult
 	err = s.rpc.Call("accel_crypto_key_destroy", &keyDestroyParams, &keyDestroyResult)
@@ -106,19 +159,32 @@ func (s *Server) DeleteEncryptedVolume(_ context.Context, in *pb.DeleteEncrypted
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
 
+	delete(s.volumes.encVolumes, volume.Name)
 	return &emptypb.Empty{}, nil
 }
 
 // UpdateEncryptedVolume updates an encrypted volume
 func (s *Server) UpdateEncryptedVolume(_ context.Context, in *pb.UpdateEncryptedVolumeRequest) (*pb.EncryptedVolume, error) {
 	log.Printf("UpdateEncryptedVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.EncryptedVolume.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	if err := s.verifyEncryptedVolume(in.EncryptedVolume); err != nil {
 		log.Printf("error: %v", err)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	resourceID := path.Base(in.EncryptedVolume.Name)
 	// first delete old bdev
 	params1 := spdk.BdevCryptoDeleteParams{
-		Name: in.EncryptedVolume.EncryptedVolumeId.Value,
+		Name: resourceID,
 	}
 	var result1 spdk.BdevCryptoDeleteResult
 	err1 := s.rpc.Call("bdev_crypto_delete", &params1, &result1)
@@ -128,13 +194,13 @@ func (s *Server) UpdateEncryptedVolume(_ context.Context, in *pb.UpdateEncrypted
 	}
 	log.Printf("Received from SPDK: %v", result1)
 	if !result1 {
-		msg := fmt.Sprintf("Could not delete Crypto: %s", in.EncryptedVolume.EncryptedVolumeId.Value)
+		msg := fmt.Sprintf("Could not delete Crypto: %s", params1.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
 	// now delete a key
 	params0 := spdk.AccelCryptoKeyDestroyParams{
-		KeyName: in.EncryptedVolume.EncryptedVolumeId.Value,
+		KeyName: resourceID,
 	}
 	var result0 spdk.AccelCryptoKeyDestroyResult
 	err0 := s.rpc.Call("accel_crypto_key_destroy", &params0, &result0)
@@ -163,9 +229,9 @@ func (s *Server) UpdateEncryptedVolume(_ context.Context, in *pb.UpdateEncrypted
 	}
 	// create bdev now
 	params3 := spdk.BdevCryptoCreateParams{
-		Name:         in.EncryptedVolume.EncryptedVolumeId.Value,
+		Name:         resourceID,
 		BaseBdevName: in.EncryptedVolume.VolumeId.Value,
-		KeyName:      in.EncryptedVolume.EncryptedVolumeId.Value,
+		KeyName:      resourceID,
 	}
 	var result3 spdk.BdevCryptoCreateResult
 	err3 := s.rpc.Call("bdev_crypto_create", &params3, &result3)
@@ -175,23 +241,24 @@ func (s *Server) UpdateEncryptedVolume(_ context.Context, in *pb.UpdateEncrypted
 	}
 	log.Printf("Received from SPDK: %v", result3)
 	if result3 == "" {
-		msg := fmt.Sprintf("Could not create Crypto Dev: %s", in.EncryptedVolume.EncryptedVolumeId.Value)
+		msg := fmt.Sprintf("Could not create Crypto Dev: %s", params3.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
 	// return result
-	response := &pb.EncryptedVolume{}
-	err4 := deepcopier.Copy(in.EncryptedVolume).To(response)
-	if err4 != nil {
-		log.Printf("error: %v", err4)
-		return nil, err4
-	}
+	response := server.ProtoClone(in.EncryptedVolume)
 	return response, nil
 }
 
 // ListEncryptedVolumes lists encrypted volumes
 func (s *Server) ListEncryptedVolumes(_ context.Context, in *pb.ListEncryptedVolumesRequest) (*pb.ListEncryptedVolumesResponse, error) {
 	log.Printf("ListEncryptedVolumes: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	size, offset, perr := server.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
 		log.Printf("error: %v", perr)
@@ -214,16 +281,36 @@ func (s *Server) ListEncryptedVolumes(_ context.Context, in *pb.ListEncryptedVol
 	Blobarray := make([]*pb.EncryptedVolume, len(result))
 	for i := range result {
 		r := &result[i]
-		Blobarray[i] = &pb.EncryptedVolume{EncryptedVolumeId: &pc.ObjectKey{Value: r.Name}}
+		Blobarray[i] = &pb.EncryptedVolume{Name: r.Name}
 	}
+	sortEncryptedVolumes(Blobarray)
+
 	return &pb.ListEncryptedVolumesResponse{EncryptedVolumes: Blobarray, NextPageToken: token}, nil
 }
 
 // GetEncryptedVolume gets an encrypted volume
 func (s *Server) GetEncryptedVolume(_ context.Context, in *pb.GetEncryptedVolumeRequest) (*pb.EncryptedVolume, error) {
 	log.Printf("GetEncryptedVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
+	volume, ok := s.volumes.encVolumes[in.Name]
+	if !ok {
+		err := status.Errorf(codes.NotFound, "unable to find key %s", in.Name)
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	resourceID := path.Base(volume.Name)
 	params := spdk.BdevGetBdevsParams{
-		Name: in.Name,
+		Name: resourceID,
 	}
 	var result []spdk.BdevGetBdevsResult
 	err := s.rpc.Call("bdev_get_bdevs", &params, &result)
@@ -237,14 +324,32 @@ func (s *Server) GetEncryptedVolume(_ context.Context, in *pb.GetEncryptedVolume
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
-	return &pb.EncryptedVolume{EncryptedVolumeId: &pc.ObjectKey{Value: result[0].Name}}, nil
+	return &pb.EncryptedVolume{Name: result[0].Name}, nil
 }
 
 // EncryptedVolumeStats gets an encrypted volume stats
 func (s *Server) EncryptedVolumeStats(_ context.Context, in *pb.EncryptedVolumeStatsRequest) (*pb.EncryptedVolumeStatsResponse, error) {
 	log.Printf("EncryptedVolumeStats: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.EncryptedVolumeId.Value); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
+	volume, ok := s.volumes.encVolumes[in.EncryptedVolumeId.Value]
+	if !ok {
+		err := status.Errorf(codes.NotFound, "unable to find key %s", in.EncryptedVolumeId.Value)
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	resourceID := path.Base(volume.Name)
 	params := spdk.BdevGetIostatParams{
-		Name: in.EncryptedVolumeId.Value,
+		Name: resourceID,
 	}
 	// See https://mholt.github.io/json-to-go/
 	var result spdk.BdevGetIostatResult
@@ -299,7 +404,7 @@ func (s *Server) getAccelCryptoKeyCreateParams(volume *pb.EncryptedVolume) spdk.
 	keyHalf := len(volume.Key) / 2
 	params.Key = hex.EncodeToString(volume.Key[:keyHalf])
 	params.Key2 = hex.EncodeToString(volume.Key[keyHalf:])
-	params.Name = volume.EncryptedVolumeId.Value
+	params.Name = path.Base(volume.Name)
 
 	return params
 }

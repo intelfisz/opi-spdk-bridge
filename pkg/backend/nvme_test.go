@@ -19,11 +19,13 @@ import (
 
 	pc "github.com/opiproject/opi-api/common/v1/gen/go"
 	pb "github.com/opiproject/opi-api/storage/v1alpha1/gen/go"
+	"github.com/opiproject/opi-spdk-bridge/pkg/server"
 )
 
-func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
-	controller := &pb.NVMfRemoteController{
-		Id:      &pc.ObjectKey{Value: "OpiNvme8"},
+var (
+	controllerID   = "opi-nvme8"
+	controllerName = server.ResourceIDToVolumeName(controllerID)
+	controller     = pb.NVMfRemoteController{
 		Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 		Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 		Traddr:  "127.0.0.1",
@@ -31,7 +33,11 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 		Subnqn:  "nqn.2016-06.io.spdk:cnode1",
 		Hostnqn: "nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c",
 	}
+)
+
+func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 	tests := map[string]struct {
+		id      string
 		in      *pb.NVMfRemoteController
 		out     *pb.NVMfRemoteController
 		spdk    []string
@@ -40,8 +46,19 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 		start   bool
 		exist   bool
 	}{
+		"illegal resource_id": {
+			"CapitalLettersNotAllowed",
+			&controller,
+			nil,
+			[]string{""},
+			codes.Unknown,
+			fmt.Sprintf("user-settable ID must only contain lowercase, numbers and hyphens (%v)", "got: 'C' in position 0"),
+			false,
+			false,
+		},
 		"valid request with invalid marshal SPDK response": {
-			controller,
+			controllerID,
+			&controller,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -50,7 +67,8 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with empty SPDK response": {
-			controller,
+			controllerID,
+			&controller,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -59,7 +77,8 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with ID mismatch SPDK response": {
-			controller,
+			controllerID,
+			&controller,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":[]}`},
 			codes.Unknown,
@@ -68,7 +87,8 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with error code from SPDK response": {
-			controller,
+			controllerID,
+			&controller,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"},"result":[]}`},
 			codes.Unknown,
@@ -77,8 +97,9 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with valid SPDK response": {
-			controller,
-			controller,
+			controllerID,
+			&controller,
+			&controller,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":["my_remote_nvmf_bdev"]}`},
 			codes.OK,
 			"",
@@ -86,8 +107,9 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"already exists": {
-			controller,
-			controller,
+			controllerID,
+			&controller,
+			&controller,
 			[]string{""},
 			codes.OK,
 			"",
@@ -103,10 +125,13 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			defer testEnv.Close()
 
 			if tt.exist {
-				testEnv.opiSpdkServer.Volumes.NvmeVolumes[controller.Id.Value] = controller
+				testEnv.opiSpdkServer.Volumes.NvmeVolumes[controllerName] = &controller
+			}
+			if tt.out != nil {
+				tt.out.Name = controllerName
 			}
 
-			request := &pb.CreateNVMfRemoteControllerRequest{NvMfRemoteController: tt.in}
+			request := &pb.CreateNVMfRemoteControllerRequest{NvMfRemoteController: tt.in, NvMfRemoteControllerId: tt.id}
 			response, err := testEnv.client.CreateNVMfRemoteController(testEnv.ctx, request)
 			if response != nil {
 				// if !reflect.DeepEqual(response, tt.out) {
@@ -120,7 +145,7 @@ func TestBackEnd_CreateNVMfRemoteController(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -141,7 +166,7 @@ func TestBackEnd_NVMfRemoteControllerReset(t *testing.T) {
 		start   bool
 	}{
 		"valid request without SPDK": {
-			"volume-test",
+			controllerID,
 			&emptypb.Empty{},
 			[]string{""},
 			codes.OK,
@@ -170,7 +195,7 @@ func TestBackEnd_NVMfRemoteControllerReset(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -193,7 +218,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 		token   string
 	}{
 		"valid request with invalid SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":[]}`},
 			codes.InvalidArgument,
@@ -203,7 +228,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"valid request with invalid marshal SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -213,7 +238,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"valid request with empty SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -223,7 +248,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"valid request with ID mismatch SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":[]}`},
 			codes.Unknown,
@@ -233,7 +258,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"valid request with error code from SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"}}`},
 			codes.Unknown,
@@ -243,10 +268,10 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"valid request with valid SPDK response": {
-			"volume-test",
+			controllerID,
 			[]*pb.NVMfRemoteController{
 				{
-					Id:      &pc.ObjectKey{Value: "OpiNvme12"},
+					Name:    "OpiNvme12",
 					Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 					Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 					Traddr:  "127.0.0.1",
@@ -255,7 +280,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 					Hostnqn: "nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c",
 				},
 				{
-					Id:      &pc.ObjectKey{Value: "OpiNvme13"},
+					Name:    "OpiNvme13",
 					Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 					Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 					Traddr:  "127.0.0.1",
@@ -264,7 +289,10 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 					Hostnqn: "nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c",
 				},
 			},
-			[]string{`{"jsonrpc":"2.0","id":%d,"result":[{"name":"OpiNvme12","ctrlrs":[{"state":"enabled","trid":{"trtype":"TCP","adrfam":"IPv4","traddr":"127.0.0.1","trsvcid":"4444","subnqn":"nqn.2016-06.io.spdk:cnode1"},"cntlid":1,"host":{"nqn":"nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c","addr":"","svcid":""}}]},{"name":"OpiNvme13","ctrlrs":[{"state":"enabled","trid":{"trtype":"TCP","adrfam":"IPv4","traddr":"127.0.0.1","trsvcid":"8888","subnqn":"nqn.2016-06.io.spdk:cnode1"},"cntlid":1,"host":{"nqn":"nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c","addr":"","svcid":""}}]}]}`},
+			[]string{`{"jsonrpc":"2.0","id":%d,"result":[` +
+				`{"name":"OpiNvme13","ctrlrs":[{"state":"enabled","trid":{"trtype":"TCP","adrfam":"IPv4","traddr":"127.0.0.1","trsvcid":"8888","subnqn":"nqn.2016-06.io.spdk:cnode1"},"cntlid":1,"host":{"nqn":"nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c","addr":"","svcid":""}}]},` +
+				`{"name":"OpiNvme12","ctrlrs":[{"state":"enabled","trid":{"trtype":"TCP","adrfam":"IPv4","traddr":"127.0.0.1","trsvcid":"4444","subnqn":"nqn.2016-06.io.spdk:cnode1"},"cntlid":1,"host":{"nqn":"nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c","addr":"","svcid":""}}]}` +
+				`]}`},
 			codes.OK,
 			"",
 			true,
@@ -272,10 +300,10 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"pagination overflow": {
-			"volume-test",
+			controllerID,
 			[]*pb.NVMfRemoteController{
 				{
-					Id:      &pc.ObjectKey{Value: "OpiNvme12"},
+					Name:    "OpiNvme12",
 					Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 					Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 					Traddr:  "127.0.0.1",
@@ -284,7 +312,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 					Hostnqn: "nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c",
 				},
 				{
-					Id:      &pc.ObjectKey{Value: "OpiNvme13"},
+					Name:    "OpiNvme13",
 					Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 					Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 					Traddr:  "127.0.0.1",
@@ -301,7 +329,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"pagination negative": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{},
 			codes.InvalidArgument,
@@ -311,7 +339,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"pagination error": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{},
 			codes.NotFound,
@@ -321,10 +349,10 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"unknown-pagination-token",
 		},
 		"pagination": {
-			"volume-test",
+			controllerID,
 			[]*pb.NVMfRemoteController{
 				{
-					Id:      &pc.ObjectKey{Value: "OpiNvme12"},
+					Name:    "OpiNvme12",
 					Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 					Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 					Traddr:  "127.0.0.1",
@@ -341,10 +369,10 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			"",
 		},
 		"pagination offset": {
-			"volume-test",
+			controllerID,
 			[]*pb.NVMfRemoteController{
 				{
-					Id:      &pc.ObjectKey{Value: "OpiNvme13"},
+					Name:    "OpiNvme13",
 					Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 					Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 					Traddr:  "127.0.0.1",
@@ -385,7 +413,7 @@ func TestBackEnd_ListNVMfRemoteControllers(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -406,7 +434,7 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 		start   bool
 	}{
 		"valid request with invalid SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":[]}`},
 			codes.InvalidArgument,
@@ -414,7 +442,7 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 			true,
 		},
 		"valid request with invalid marshal SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -422,7 +450,7 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 			true,
 		},
 		"valid request with empty SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -430,7 +458,7 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 			true,
 		},
 		"valid request with ID mismatch SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":[]}`},
 			codes.Unknown,
@@ -438,7 +466,7 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 			true,
 		},
 		"valid request with error code from SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"}}`},
 			codes.Unknown,
@@ -446,9 +474,9 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 			true,
 		},
 		"valid request with valid SPDK response": {
-			"OpiNvme12",
+			controllerID,
 			&pb.NVMfRemoteController{
-				Id:      &pc.ObjectKey{Value: "OpiNvme12"},
+				Name:    controllerID,
 				Trtype:  pb.NvmeTransportType_NVME_TRANSPORT_TCP,
 				Adrfam:  pb.NvmeAddressFamily_NVMF_ADRFAM_IPV4,
 				Traddr:  "127.0.0.1",
@@ -456,10 +484,18 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 				Subnqn:  "nqn.2016-06.io.spdk:cnode1",
 				Hostnqn: "nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c",
 			},
-			[]string{`{"jsonrpc":"2.0","id":%d,"result":[{"name":"OpiNvme12","ctrlrs":[{"state":"enabled","trid":{"trtype":"TCP","adrfam":"IPv4","traddr":"127.0.0.1","trsvcid":"4444","subnqn":"nqn.2016-06.io.spdk:cnode1"},"cntlid":1,"host":{"nqn":"nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c","addr":"","svcid":""}}]}]}`},
+			[]string{`{"jsonrpc":"2.0","id":%d,"result":[{"name":"opi-nvme8","ctrlrs":[{"state":"enabled","trid":{"trtype":"TCP","adrfam":"IPv4","traddr":"127.0.0.1","trsvcid":"4444","subnqn":"nqn.2016-06.io.spdk:cnode1"},"cntlid":1,"host":{"nqn":"nqn.2014-08.org.nvmexpress:uuid:feb98abe-d51f-40c8-b348-2753f3571d3c","addr":"","svcid":""}}]}]}`},
 			codes.OK,
 			"",
 			true,
+		},
+		"valid request with unknown key": {
+			"unknown-id",
+			nil,
+			[]string{""},
+			codes.NotFound,
+			fmt.Sprintf("unable to find key %v", "unknown-id"),
+			false,
 		},
 	}
 
@@ -468,6 +504,8 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
+
+			testEnv.opiSpdkServer.Volumes.NvmeVolumes[controllerID] = &controller
 
 			request := &pb.GetNVMfRemoteControllerRequest{Name: tt.in}
 			response, err := testEnv.client.GetNVMfRemoteController(testEnv.ctx, request)
@@ -483,7 +521,7 @@ func TestBackEnd_GetNVMfRemoteController(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -504,7 +542,7 @@ func TestBackEnd_NVMfRemoteControllerStats(t *testing.T) {
 		start   bool
 	}{
 		"valid request with valid SPDK response": {
-			"Malloc0",
+			controllerID,
 			&pb.VolumeStats{
 				ReadOpsCount:  -1,
 				WriteOpsCount: -1,
@@ -514,6 +552,14 @@ func TestBackEnd_NVMfRemoteControllerStats(t *testing.T) {
 			"",
 			false,
 		},
+		"valid request with unknown key": {
+			"unknown-id",
+			nil,
+			[]string{""},
+			codes.NotFound,
+			fmt.Sprintf("unable to find key %v", "unknown-id"),
+			false,
+		},
 	}
 
 	// run tests
@@ -521,6 +567,8 @@ func TestBackEnd_NVMfRemoteControllerStats(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
+
+			testEnv.opiSpdkServer.Volumes.NvmeVolumes[controllerID] = &controller
 
 			request := &pb.NVMfRemoteControllerStatsRequest{Id: &pc.ObjectKey{Value: tt.in}}
 			response, err := testEnv.client.NVMfRemoteControllerStats(testEnv.ctx, request)
@@ -533,7 +581,7 @@ func TestBackEnd_NVMfRemoteControllerStats(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -555,16 +603,16 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 		missing bool
 	}{
 		"valid request with invalid SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.InvalidArgument,
-			fmt.Sprintf("Could not delete Crypto: %v", "volume-test"),
+			fmt.Sprintf("Could not delete Crypto: %v", controllerID),
 			true,
 			false,
 		},
 		"valid request with invalid marshal SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":[]}`},
 			codes.Unknown,
@@ -573,7 +621,7 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with empty SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -582,7 +630,7 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with ID mismatch SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -591,7 +639,7 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with error code from SPDK response": {
-			"volume-test",
+			controllerID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"},"result":false}`},
 			codes.Unknown,
@@ -600,7 +648,7 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 			false,
 		},
 		"valid request with valid SPDK response": {
-			"volume-test",
+			controllerID,
 			&emptypb.Empty{},
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`},
 			codes.OK,
@@ -608,26 +656,24 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 			true,
 			false,
 		},
-		// {
-		// 	"valid request with unknown key",
-		// 	"unknown-id",
-		// 	nil,
-		// 	[]string{""},
-		// 	codes.Unknown,
-		// 	fmt.Sprintf("unable to find key %v", "unknown-id"),
-		// 	false,
-		//  false,
-		// },
-		// {
-		// 	"unknown key with missing allowed",
-		// 	"unknown-id",
-		// 	&emptypb.Empty{},
-		// 	[]string{""},
-		// 	codes.OK,
-		// 	"",
-		// 	false,
-		// 	true,
-		// },
+		"valid request with unknown key": {
+			"unknown-id",
+			nil,
+			[]string{""},
+			codes.NotFound,
+			fmt.Sprintf("unable to find key %v", server.ResourceIDToVolumeName("unknown-id")),
+			false,
+			false,
+		},
+		"unknown key with missing allowed": {
+			"unknown-id",
+			&emptypb.Empty{},
+			[]string{""},
+			codes.OK,
+			"",
+			false,
+			true,
+		},
 	}
 
 	// run tests
@@ -636,12 +682,15 @@ func TestBackEnd_DeleteNVMfRemoteController(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
 
-			request := &pb.DeleteNVMfRemoteControllerRequest{Name: tt.in, AllowMissing: tt.missing}
+			fname1 := server.ResourceIDToVolumeName(tt.in)
+			testEnv.opiSpdkServer.Volumes.NvmeVolumes[controllerName] = &controller
+
+			request := &pb.DeleteNVMfRemoteControllerRequest{Name: fname1, AllowMissing: tt.missing}
 			response, err := testEnv.client.DeleteNVMfRemoteController(testEnv.ctx, request)
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())

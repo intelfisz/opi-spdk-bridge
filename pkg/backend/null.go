@@ -9,6 +9,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path"
+	"sort"
 
 	"github.com/opiproject/gospdk/spdk"
 	pc "github.com/opiproject/opi-api/common/v1/gen/go"
@@ -16,24 +18,50 @@ import (
 	"github.com/opiproject/opi-spdk-bridge/pkg/server"
 
 	"github.com/google/uuid"
-	"github.com/ulule/deepcopier"
+	"go.einride.tech/aip/fieldbehavior"
+	"go.einride.tech/aip/fieldmask"
+	"go.einride.tech/aip/resourceid"
+	"go.einride.tech/aip/resourcename"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
+func sortNullDebugs(nullDebugs []*pb.NullDebug) {
+	sort.Slice(nullDebugs, func(i int, j int) bool {
+		return nullDebugs[i].Name < nullDebugs[j].Name
+	})
+}
+
 // CreateNullDebug creates a Null Debug instance
 func (s *Server) CreateNullDebug(_ context.Context, in *pb.CreateNullDebugRequest) (*pb.NullDebug, error) {
 	log.Printf("CreateNullDebug: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// see https://google.aip.dev/133#user-specified-ids
+	resourceID := resourceid.NewSystemGenerated()
+	if in.NullDebugId != "" {
+		err := resourceid.ValidateUserSettable(in.NullDebugId)
+		if err != nil {
+			log.Printf("error: %v", err)
+			return nil, err
+		}
+		log.Printf("client provided the ID of a resource %v, ignoring the name field %v", in.NullDebugId, in.NullDebug.Name)
+		resourceID = in.NullDebugId
+	}
+	in.NullDebug.Name = server.ResourceIDToVolumeName(resourceID)
 	// idempotent API when called with same key, should return same object
-	volume, ok := s.Volumes.NullVolumes[in.NullDebug.Handle.Value]
+	volume, ok := s.Volumes.NullVolumes[in.NullDebug.Name]
 	if ok {
-		log.Printf("Already existing NullDebug with id %v", in.NullDebug.Handle.Value)
+		log.Printf("Already existing NullDebug with id %v", in.NullDebug.Name)
 		return volume, nil
 	}
 	// not found, so create a new one
 	params := spdk.BdevNullCreateParams{
-		Name:      in.NullDebug.Handle.Value,
+		Name:      resourceID,
 		BlockSize: 512,
 		NumBlocks: 64,
 	}
@@ -45,23 +73,30 @@ func (s *Server) CreateNullDebug(_ context.Context, in *pb.CreateNullDebugReques
 	}
 	log.Printf("Received from SPDK: %v", result)
 	if result == "" {
-		msg := fmt.Sprintf("Could not create Null Dev: %s", in.NullDebug.Handle.Value)
+		msg := fmt.Sprintf("Could not create Null Dev: %s", params.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
-	response := &pb.NullDebug{}
-	err = deepcopier.Copy(in.NullDebug).To(response)
-	if err != nil {
-		log.Printf("error: %v", err)
-		return nil, err
-	}
-	s.Volumes.NullVolumes[in.NullDebug.Handle.Value] = response
+	response := server.ProtoClone(in.NullDebug)
+	s.Volumes.NullVolumes[in.NullDebug.Name] = response
+	log.Printf("CreateNullDebug: Sending to client: %v", response)
 	return response, nil
 }
 
 // DeleteNullDebug deletes a Null Debug instance
 func (s *Server) DeleteNullDebug(_ context.Context, in *pb.DeleteNullDebugRequest) (*emptypb.Empty, error) {
 	log.Printf("DeleteNullDebug: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	volume, ok := s.Volumes.NullVolumes[in.Name]
 	if !ok {
 		if in.AllowMissing {
@@ -71,8 +106,9 @@ func (s *Server) DeleteNullDebug(_ context.Context, in *pb.DeleteNullDebugReques
 		log.Printf("error: %v", err)
 		return nil, err
 	}
+	resourceID := path.Base(volume.Name)
 	params := spdk.BdevNullDeleteParams{
-		Name: in.Name,
+		Name: resourceID,
 	}
 	var result spdk.BdevNullDeleteResult
 	err := s.rpc.Call("bdev_null_delete", &params, &result)
@@ -82,19 +118,45 @@ func (s *Server) DeleteNullDebug(_ context.Context, in *pb.DeleteNullDebugReques
 	}
 	log.Printf("Received from SPDK: %v", result)
 	if !result {
-		msg := fmt.Sprintf("Could not delete Null Dev: %s", volume.Handle.Value)
+		msg := fmt.Sprintf("Could not delete Null Dev: %s", params.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
-	delete(s.Volumes.NullVolumes, volume.Handle.Value)
+	delete(s.Volumes.NullVolumes, volume.Name)
 	return &emptypb.Empty{}, nil
 }
 
 // UpdateNullDebug updates a Null Debug instance
 func (s *Server) UpdateNullDebug(_ context.Context, in *pb.UpdateNullDebugRequest) (*pb.NullDebug, error) {
 	log.Printf("UpdateNullDebug: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.NullDebug.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
+	volume, ok := s.Volumes.NullVolumes[in.NullDebug.Name]
+	if !ok {
+		if in.AllowMissing {
+			log.Printf("TODO: in case of AllowMissing, create a new resource, don;t return error")
+		}
+		err := status.Errorf(codes.NotFound, "unable to find key %s", in.NullDebug.Name)
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	resourceID := path.Base(volume.Name)
+	// update_mask = 2
+	if err := fieldmask.Validate(in.UpdateMask, in.NullDebug); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
 	params1 := spdk.BdevNullDeleteParams{
-		Name: in.NullDebug.Handle.Value,
+		Name: resourceID,
 	}
 	var result1 spdk.BdevNullDeleteResult
 	err1 := s.rpc.Call("bdev_null_delete", &params1, &result1)
@@ -104,12 +166,12 @@ func (s *Server) UpdateNullDebug(_ context.Context, in *pb.UpdateNullDebugReques
 	}
 	log.Printf("Received from SPDK: %v", result1)
 	if !result1 {
-		msg := fmt.Sprintf("Could not delete Null Dev: %s", in.NullDebug.Handle.Value)
+		msg := fmt.Sprintf("Could not delete Null Dev: %s", params1.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
 	params2 := spdk.BdevNullCreateParams{
-		Name:      in.NullDebug.Handle.Value,
+		Name:      resourceID,
 		BlockSize: 512,
 		NumBlocks: 64,
 	}
@@ -121,23 +183,24 @@ func (s *Server) UpdateNullDebug(_ context.Context, in *pb.UpdateNullDebugReques
 	}
 	log.Printf("Received from SPDK: %v", result2)
 	if result2 == "" {
-		msg := fmt.Sprintf("Could not create Null Dev: %s", in.NullDebug.Handle.Value)
+		msg := fmt.Sprintf("Could not create Null Dev: %s", params2.Name)
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
-	response := &pb.NullDebug{}
-	err3 := deepcopier.Copy(in.NullDebug).To(response)
-	if err3 != nil {
-		log.Printf("error: %v", err3)
-		return nil, err3
-	}
-	s.Volumes.NullVolumes[in.NullDebug.Handle.Value] = response
+	response := server.ProtoClone(in.NullDebug)
+	s.Volumes.NullVolumes[in.NullDebug.Name] = response
 	return response, nil
 }
 
 // ListNullDebugs lists Null Debug instances
 func (s *Server) ListNullDebugs(_ context.Context, in *pb.ListNullDebugsRequest) (*pb.ListNullDebugsResponse, error) {
 	log.Printf("ListNullDebugs: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	size, offset, perr := server.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
 		log.Printf("error: %v", perr)
@@ -160,16 +223,35 @@ func (s *Server) ListNullDebugs(_ context.Context, in *pb.ListNullDebugsRequest)
 	Blobarray := make([]*pb.NullDebug, len(result))
 	for i := range result {
 		r := &result[i]
-		Blobarray[i] = &pb.NullDebug{Handle: &pc.ObjectKey{Value: r.Name}, Uuid: &pc.Uuid{Value: r.UUID}, BlockSize: r.BlockSize, BlocksCount: r.NumBlocks}
+		Blobarray[i] = &pb.NullDebug{Name: r.Name, Uuid: &pc.Uuid{Value: r.UUID}, BlockSize: r.BlockSize, BlocksCount: r.NumBlocks}
 	}
+	sortNullDebugs(Blobarray)
 	return &pb.ListNullDebugsResponse{NullDebugs: Blobarray, NextPageToken: token}, nil
 }
 
 // GetNullDebug gets a a Null Debug instance
 func (s *Server) GetNullDebug(_ context.Context, in *pb.GetNullDebugRequest) (*pb.NullDebug, error) {
 	log.Printf("GetNullDebug: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
+	volume, ok := s.Volumes.NullVolumes[in.Name]
+	if !ok {
+		err := status.Errorf(codes.NotFound, "unable to find key %s", in.Name)
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	resourceID := path.Base(volume.Name)
 	params := spdk.BdevGetBdevsParams{
-		Name: in.Name,
+		Name: resourceID,
 	}
 	var result []spdk.BdevGetBdevsResult
 	err := s.rpc.Call("bdev_get_bdevs", &params, &result)
@@ -183,14 +265,32 @@ func (s *Server) GetNullDebug(_ context.Context, in *pb.GetNullDebugRequest) (*p
 		log.Print(msg)
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
-	return &pb.NullDebug{Handle: &pc.ObjectKey{Value: result[0].Name}, Uuid: &pc.Uuid{Value: result[0].UUID}, BlockSize: result[0].BlockSize, BlocksCount: result[0].NumBlocks}, nil
+	return &pb.NullDebug{Name: result[0].Name, Uuid: &pc.Uuid{Value: result[0].UUID}, BlockSize: result[0].BlockSize, BlocksCount: result[0].NumBlocks}, nil
 }
 
 // NullDebugStats gets a Null Debug instance stats
 func (s *Server) NullDebugStats(_ context.Context, in *pb.NullDebugStatsRequest) (*pb.NullDebugStatsResponse, error) {
 	log.Printf("NullDebugStats: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Handle.Value); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
+	volume, ok := s.Volumes.NullVolumes[in.Handle.Value]
+	if !ok {
+		err := status.Errorf(codes.NotFound, "unable to find key %s", in.Handle.Value)
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	resourceID := path.Base(volume.Name)
 	params := spdk.BdevGetIostatParams{
-		Name: in.Handle.Value,
+		Name: resourceID,
 	}
 	// See https://mholt.github.io/json-to-go/
 	var result spdk.BdevGetIostatResult

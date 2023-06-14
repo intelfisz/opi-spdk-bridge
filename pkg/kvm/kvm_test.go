@@ -6,6 +6,7 @@ package kvm
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"os"
@@ -102,7 +103,7 @@ func (s *mockQmpCalls) ExpectAddChardev(id string) *mockQmpCalls {
 		response: `{"return": {"pty": "/tmp/dev/pty/42"}}` + "\n",
 		expectedArgs: []string{
 			`"execute":"chardev-add"`,
-			`"id":"` + id + `"`,
+			`"id":"` + toQemuID(id) + `"`,
 		},
 		expectedRegExpArgs: []*regexp.Regexp{
 			regexp.MustCompile(`"path":"` + pathRegexpStr + id + `"`),
@@ -117,25 +118,45 @@ func (s *mockQmpCalls) ExpectAddVirtioBlk(id string, chardevID string) *mockQmpC
 		expectedArgs: []string{
 			`"execute":"device_add"`,
 			`"driver":"vhost-user-blk-pci"`,
-			`"id":"` + id + `"`,
-			`"chardev":"` + chardevID + `"`,
+			`"id":"` + toQemuID(id) + `"`,
+			`"chardev":"` + toQemuID(chardevID) + `"`,
 		},
 	})
 	return s
 }
 
-func (s *mockQmpCalls) ExpectAddNvmeController(id string) *mockQmpCalls {
+func (s *mockQmpCalls) ExpectAddVirtioBlkWithAddress(id string, chardevID string, bus string, pf uint32) *mockQmpCalls {
+	s.ExpectAddVirtioBlk(id, chardevID)
+	index := len(s.expectedCalls) - 1
+	s.expectedCalls[index].expectedArgs =
+		append(s.expectedCalls[index].expectedArgs, `"bus":"`+bus+`"`)
+	s.expectedCalls[index].expectedArgs =
+		append(s.expectedCalls[index].expectedArgs, `"addr":"`+fmt.Sprintf("%#x", pf)+`"`)
+	return s
+}
+
+func (s *mockQmpCalls) ExpectAddNvmeController(id string, ctrlrDir string) *mockQmpCalls {
 	s.expectedCalls = append(s.expectedCalls, mockCall{
 		response: genericQmpOk,
 		expectedArgs: []string{
 			`"execute":"device_add"`,
 			`"driver":"vfio-user-pci"`,
-			`"id":"` + id + `"`,
+			`"id":"` + toQemuID(id) + `"`,
 		},
 		expectedRegExpArgs: []*regexp.Regexp{
-			regexp.MustCompile(`"socket":"` + pathRegexpStr + id + `/cntrl"`),
+			regexp.MustCompile(`"socket":"` + pathRegexpStr + ctrlrDir + `/cntrl"`),
 		},
 	})
+	return s
+}
+
+func (s *mockQmpCalls) ExpectAddNvmeControllerWithAddress(id string, ctrlDir string, bus string, pf uint32) *mockQmpCalls {
+	s.ExpectAddNvmeController(id, ctrlDir)
+	index := len(s.expectedCalls) - 1
+	s.expectedCalls[index].expectedArgs =
+		append(s.expectedCalls[index].expectedArgs, `"bus":"`+bus+`"`)
+	s.expectedCalls[index].expectedArgs =
+		append(s.expectedCalls[index].expectedArgs, `"addr":"`+fmt.Sprintf("%#x", pf)+`"`)
 	return s
 }
 
@@ -144,7 +165,7 @@ func (s *mockQmpCalls) ExpectDeleteChardev(id string) *mockQmpCalls {
 		response: genericQmpOk,
 		expectedArgs: []string{
 			`"execute":"chardev-remove"`,
-			`"id":"` + id + `"`,
+			`"id":"` + toQemuID(id) + `"`,
 		},
 	})
 	return s
@@ -154,7 +175,7 @@ func (s *mockQmpCalls) ExpectDeleteVirtioBlkWithEvent(id string) *mockQmpCalls {
 	s.ExpectDeleteVirtioBlk(id)
 	s.expectedCalls[len(s.expectedCalls)-1].event =
 		`{"event":"DEVICE_DELETED","data":{"path":"/some/path","device":"` +
-			id + `"},"timestamp":{"seconds":1,"microseconds":2}}` + "\n"
+			toQemuID(id) + `"},"timestamp":{"seconds":1,"microseconds":2}}` + "\n"
 	return s
 }
 
@@ -169,7 +190,7 @@ func (s *mockQmpCalls) ExpectDeleteNvmeController(id string) *mockQmpCalls {
 func (s *mockQmpCalls) ExpectQueryPci(id string) *mockQmpCalls {
 	response := `{"return":[{"bus":0,"devices":[{"bus":0,"slot":0,"function":0,` +
 		`"class_info":{"class":0},"id":{"device":0,"vendor":0},"qdev_id":"` +
-		id + `","regions":[]}]}]}` + "\n"
+		toQemuID(id) + `","regions":[]}]}]}` + "\n"
 	s.expectedCalls = append(s.expectedCalls, mockCall{
 		response: response,
 		expectedArgs: []string{
@@ -202,7 +223,7 @@ func (s *mockQmpCalls) expectDeleteDevice(id string) *mockQmpCalls {
 		response: genericQmpOk,
 		expectedArgs: []string{
 			`"execute":"device_del"`,
-			`"id":"` + id + `"`,
+			`"id":"` + toQemuID(id) + `"`,
 		},
 	})
 	return s

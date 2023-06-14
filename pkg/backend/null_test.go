@@ -12,17 +12,20 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pc "github.com/opiproject/opi-api/common/v1/gen/go"
 	pb "github.com/opiproject/opi-api/storage/v1alpha1/gen/go"
+	"github.com/opiproject/opi-spdk-bridge/pkg/server"
 )
 
 var (
-	testNullVolume = pb.NullDebug{
-		Handle:      &pc.ObjectKey{Value: "mytest"},
+	testNullVolumeID   = "mytest"
+	testNullVolumeName = server.ResourceIDToVolumeName(testNullVolumeID)
+	testNullVolume     = pb.NullDebug{
 		BlockSize:   512,
 		BlocksCount: 64,
 	}
@@ -30,6 +33,7 @@ var (
 
 func TestBackEnd_CreateNullDebug(t *testing.T) {
 	tests := map[string]struct {
+		id      string
 		in      *pb.NullDebug
 		out     *pb.NullDebug
 		spdk    []string
@@ -38,16 +42,28 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 		start   bool
 		exist   bool
 	}{
+		"illegal resource_id": {
+			"CapitalLettersNotAllowed",
+			&testNullVolume,
+			nil,
+			[]string{""},
+			codes.Unknown,
+			fmt.Sprintf("user-settable ID must only contain lowercase, numbers and hyphens (%v)", "got: 'C' in position 0"),
+			false,
+			false,
+		},
 		"valid request with invalid SPDK response": {
+			testNullVolumeID,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":""}`},
 			codes.InvalidArgument,
-			fmt.Sprintf("Could not create Null Dev: %v", testNullVolume.Handle.Value),
+			fmt.Sprintf("Could not create Null Dev: %v", testNullVolumeID),
 			true,
 			false,
 		},
 		"valid request with empty SPDK response": {
+			testNullVolumeID,
 			&testNullVolume,
 			nil,
 			[]string{""},
@@ -57,6 +73,7 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 			false,
 		},
 		"valid request with ID mismatch SPDK response": {
+			testNullVolumeID,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":""}`},
@@ -66,6 +83,7 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 			false,
 		},
 		"valid request with error code from SPDK response": {
+			testNullVolumeID,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"},"result":""}`},
@@ -75,6 +93,7 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 			false,
 		},
 		"valid request with valid SPDK response": {
+			testNullVolumeID,
 			&testNullVolume,
 			&testNullVolume,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":"mytest"}`},
@@ -84,6 +103,7 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 			false,
 		},
 		"already exists": {
+			testNullVolumeID,
 			&testNullVolume,
 			&testNullVolume,
 			[]string{""},
@@ -101,10 +121,13 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 			defer testEnv.Close()
 
 			if tt.exist {
-				testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolume.Handle.Value] = &testNullVolume
+				testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolumeName] = &testNullVolume
+			}
+			if tt.out != nil {
+				tt.out.Name = testNullVolumeName
 			}
 
-			request := &pb.CreateNullDebugRequest{NullDebug: tt.in}
+			request := &pb.CreateNullDebugRequest{NullDebug: tt.in, NullDebugId: tt.id}
 			response, err := testEnv.client.CreateNullDebug(testEnv.ctx, request)
 			if response != nil {
 				// Marshall the request and response, so we can just compare the contained data
@@ -120,7 +143,7 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -133,6 +156,7 @@ func TestBackEnd_CreateNullDebug(t *testing.T) {
 
 func TestBackEnd_UpdateNullDebug(t *testing.T) {
 	tests := map[string]struct {
+		mask    *fieldmaskpb.FieldMask
 		in      *pb.NullDebug
 		out     *pb.NullDebug
 		spdk    []string
@@ -140,15 +164,26 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 		errMsg  string
 		start   bool
 	}{
+		"invalid fieldmask": {
+			&fieldmaskpb.FieldMask{Paths: []string{"*", "author"}},
+			&testNullVolume,
+			nil,
+			[]string{""},
+			codes.Unknown,
+			fmt.Sprintf("invalid field path: %s", "'*' must not be used with other paths"),
+			false,
+		},
 		"delete fails": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.InvalidArgument,
-			fmt.Sprintf("Could not delete Null Dev: %s", testNullVolume.Handle.Value),
+			fmt.Sprintf("Could not delete Null Dev: %s", testNullVolumeID),
 			true,
 		},
 		"delete empty": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{""},
@@ -157,6 +192,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"delete ID mismatch": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":false}`},
@@ -165,6 +201,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"delete exception": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"},"result":false}`},
@@ -173,6 +210,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"delete ok create fails": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`, `{"id":%d,"error":{"code":0,"message":""},"result":""}`},
@@ -181,6 +219,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"delete ok create empty": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`, ""},
@@ -189,6 +228,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"delete ok create ID mismatch": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`, `{"id":0,"error":{"code":0,"message":""},"result":""}`},
@@ -197,6 +237,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"delete ok create exception": {
+			nil,
 			&testNullVolume,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`, `{"id":%d,"error":{"code":1,"message":"myopierr"},"result":""}`},
@@ -205,12 +246,26 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			true,
 		},
 		"valid request with valid SPDK response": {
+			nil,
 			&testNullVolume,
 			&testNullVolume,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`, `{"id":%d,"error":{"code":0,"message":""},"result":"mytest"}`},
 			codes.OK,
 			"",
 			true,
+		},
+		"valid request with unknown key": {
+			nil,
+			&pb.NullDebug{
+				Name:        server.ResourceIDToVolumeName("unknown-id"),
+				BlockSize:   512,
+				BlocksCount: 64,
+			},
+			nil,
+			[]string{""},
+			codes.NotFound,
+			fmt.Sprintf("unable to find key %v", server.ResourceIDToVolumeName("unknown-id")),
+			false,
 		},
 	}
 
@@ -220,7 +275,10 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
 
-			request := &pb.UpdateNullDebugRequest{NullDebug: tt.in}
+			testNullVolume.Name = testNullVolumeName
+			testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolumeName] = &testNullVolume
+
+			request := &pb.UpdateNullDebugRequest{NullDebug: tt.in, UpdateMask: tt.mask}
 			response, err := testEnv.client.UpdateNullDebug(testEnv.ctx, request)
 			if response != nil {
 				// Marshall the request and response, so we can just compare the contained data
@@ -236,7 +294,7 @@ func TestBackEnd_UpdateNullDebug(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -259,7 +317,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 		token   string
 	}{
 		"valid request with invalid SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":[]}`},
 			codes.InvalidArgument,
@@ -269,7 +327,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"valid request with invalid marshal SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -279,7 +337,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"valid request with empty SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -289,7 +347,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"valid request with ID mismatch SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":[]}`},
 			codes.Unknown,
@@ -299,7 +357,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"valid request with error code from SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"}}`},
 			codes.Unknown,
@@ -309,22 +367,25 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"valid request with valid SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			[]*pb.NullDebug{
 				{
-					Handle:      &pc.ObjectKey{Value: "Malloc0"},
+					Name:        "Malloc0",
 					Uuid:        &pc.Uuid{Value: "11d3902e-d9bb-49a7-bb27-cd7261ef3217"},
 					BlockSize:   512,
 					BlocksCount: 131072,
 				},
 				{
-					Handle:      &pc.ObjectKey{Value: "Malloc1"},
+					Name:        "Malloc1",
 					Uuid:        &pc.Uuid{Value: "88112c76-8c49-4395-955a-0d695b1d2099"},
 					BlockSize:   512,
 					BlocksCount: 131072,
 				},
 			},
-			[]string{`{"jsonrpc":"2.0","id":%d,"result":[{"name":"Malloc0","aliases":["11d3902e-d9bb-49a7-bb27-cd7261ef3217"],"product_name":"Malloc disk","block_size":512,"num_blocks":131072,"uuid":"11d3902e-d9bb-49a7-bb27-cd7261ef3217","assigned_rate_limits":{"rw_ios_per_sec":0,"rw_mbytes_per_sec":0,"r_mbytes_per_sec":0,"w_mbytes_per_sec":0},"claimed":false,"zoned":false,"supported_io_types":{"read":true,"write":true,"unmap":true,"write_zeroes":true,"flush":true,"reset":true,"compare":false,"compare_and_write":false,"abort":true,"nvme_admin":false,"nvme_io":false},"driver_specific":{}},{"name":"Malloc1","aliases":["88112c76-8c49-4395-955a-0d695b1d2099"],"product_name":"Malloc disk","block_size":512,"num_blocks":131072,"uuid":"88112c76-8c49-4395-955a-0d695b1d2099","assigned_rate_limits":{"rw_ios_per_sec":0,"rw_mbytes_per_sec":0,"r_mbytes_per_sec":0,"w_mbytes_per_sec":0},"claimed":false,"zoned":false,"supported_io_types":{"read":true,"write":true,"unmap":true,"write_zeroes":true,"flush":true,"reset":true,"compare":false,"compare_and_write":false,"abort":true,"nvme_admin":false,"nvme_io":false},"driver_specific":{}}]}`},
+			[]string{`{"jsonrpc":"2.0","id":%d,"result":[` +
+				`{"name":"Malloc1","aliases":["88112c76-8c49-4395-955a-0d695b1d2099"],"product_name":"Malloc disk","block_size":512,"num_blocks":131072,"uuid":"88112c76-8c49-4395-955a-0d695b1d2099","assigned_rate_limits":{"rw_ios_per_sec":0,"rw_mbytes_per_sec":0,"r_mbytes_per_sec":0,"w_mbytes_per_sec":0},"claimed":false,"zoned":false,"supported_io_types":{"read":true,"write":true,"unmap":true,"write_zeroes":true,"flush":true,"reset":true,"compare":false,"compare_and_write":false,"abort":true,"nvme_admin":false,"nvme_io":false},"driver_specific":{}},` +
+				`{"name":"Malloc0","aliases":["11d3902e-d9bb-49a7-bb27-cd7261ef3217"],"product_name":"Malloc disk","block_size":512,"num_blocks":131072,"uuid":"11d3902e-d9bb-49a7-bb27-cd7261ef3217","assigned_rate_limits":{"rw_ios_per_sec":0,"rw_mbytes_per_sec":0,"r_mbytes_per_sec":0,"w_mbytes_per_sec":0},"claimed":false,"zoned":false,"supported_io_types":{"read":true,"write":true,"unmap":true,"write_zeroes":true,"flush":true,"reset":true,"compare":false,"compare_and_write":false,"abort":true,"nvme_admin":false,"nvme_io":false},"driver_specific":{}}` +
+				`]}`},
 			codes.OK,
 			"",
 			true,
@@ -332,16 +393,16 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"pagination overflow": {
-			"volume-test",
+			testNullVolumeID,
 			[]*pb.NullDebug{
 				{
-					Handle:      &pc.ObjectKey{Value: "Malloc0"},
+					Name:        "Malloc0",
 					Uuid:        &pc.Uuid{Value: "11d3902e-d9bb-49a7-bb27-cd7261ef3217"},
 					BlockSize:   512,
 					BlocksCount: 131072,
 				},
 				{
-					Handle:      &pc.ObjectKey{Value: "Malloc1"},
+					Name:        "Malloc1",
 					Uuid:        &pc.Uuid{Value: "88112c76-8c49-4395-955a-0d695b1d2099"},
 					BlockSize:   512,
 					BlocksCount: 131072,
@@ -355,7 +416,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"pagination negative": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{},
 			codes.InvalidArgument,
@@ -365,7 +426,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"pagination error": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{},
 			codes.NotFound,
@@ -375,10 +436,10 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"unknown-pagination-token",
 		},
 		"pagination": {
-			"volume-test",
+			testNullVolumeID,
 			[]*pb.NullDebug{
 				{
-					Handle:      &pc.ObjectKey{Value: "Malloc0"},
+					Name:        "Malloc0",
 					Uuid:        &pc.Uuid{Value: "11d3902e-d9bb-49a7-bb27-cd7261ef3217"},
 					BlockSize:   512,
 					BlocksCount: 131072,
@@ -392,10 +453,10 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			"",
 		},
 		"pagination offset": {
-			"volume-test",
+			testNullVolumeID,
 			[]*pb.NullDebug{
 				{
-					Handle:      &pc.ObjectKey{Value: "Malloc1"},
+					Name:        "Malloc1",
 					Uuid:        &pc.Uuid{Value: "88112c76-8c49-4395-955a-0d695b1d2099"},
 					BlockSize:   512,
 					BlocksCount: 131072,
@@ -433,7 +494,7 @@ func TestBackEnd_ListNullDebugs(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -454,7 +515,7 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 		start   bool
 	}{
 		"valid request with invalid SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":[]}`},
 			codes.InvalidArgument,
@@ -462,7 +523,7 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			true,
 		},
 		"valid request with invalid marshal SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -470,7 +531,7 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			true,
 		},
 		"valid request with empty SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -478,7 +539,7 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			true,
 		},
 		"valid request with ID mismatch SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":[]}`},
 			codes.Unknown,
@@ -486,7 +547,7 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			true,
 		},
 		"valid request with error code from SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"}}`},
 			codes.Unknown,
@@ -494,9 +555,9 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			true,
 		},
 		"valid request with valid SPDK response": {
-			"volume-test",
+			testNullVolumeID,
 			&pb.NullDebug{
-				Handle:      &pc.ObjectKey{Value: "Malloc1"},
+				Name:        "Malloc1",
 				Uuid:        &pc.Uuid{Value: "88112c76-8c49-4395-955a-0d695b1d2099"},
 				BlockSize:   512,
 				BlocksCount: 131072,
@@ -506,6 +567,14 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			"",
 			true,
 		},
+		"valid request with unknown key": {
+			"unknown-id",
+			nil,
+			[]string{""},
+			codes.NotFound,
+			fmt.Sprintf("unable to find key %v", "unknown-id"),
+			false,
+		},
 	}
 
 	// run tests
@@ -513,6 +582,8 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
+
+			testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolumeID] = &testNullVolume
 
 			request := &pb.GetNullDebugRequest{Name: tt.in}
 			response, err := testEnv.client.GetNullDebug(testEnv.ctx, request)
@@ -529,7 +600,7 @@ func TestBackEnd_GetNullDebug(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -550,7 +621,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 		start   bool
 	}{
 		"valid request with invalid SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":{"tick_rate":0,"ticks":0,"bdevs":null}}`},
 			codes.InvalidArgument,
@@ -558,7 +629,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 			true,
 		},
 		"valid request with invalid marshal SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -566,7 +637,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 			true,
 		},
 		"valid request with empty SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -574,7 +645,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 			true,
 		},
 		"valid request with ID mismatch SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":{"tick_rate":0,"ticks":0,"bdevs":null}}`},
 			codes.Unknown,
@@ -582,7 +653,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 			true,
 		},
 		"valid request with error code from SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"}}`},
 			codes.Unknown,
@@ -590,7 +661,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 			true,
 		},
 		"valid request with valid SPDK response": {
-			"Malloc0",
+			testNullVolumeID,
 			&pb.VolumeStats{
 				ReadBytesCount:    1,
 				ReadOpsCount:      2,
@@ -599,10 +670,18 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 				ReadLatencyTicks:  7,
 				WriteLatencyTicks: 8,
 			},
-			[]string{`{"jsonrpc":"2.0","id":%d,"result":{"tick_rate":2490000000,"ticks":18787040917434338,"bdevs":[{"name":"Malloc0","bytes_read":1,"num_read_ops":2,"bytes_written":3,"num_write_ops":4,"bytes_unmapped":0,"num_unmap_ops":0,"read_latency_ticks":7,"write_latency_ticks":8,"unmap_latency_ticks":0}]}}`},
+			[]string{`{"jsonrpc":"2.0","id":%d,"result":{"tick_rate":2490000000,"ticks":18787040917434338,"bdevs":[{"name":"mytest","bytes_read":1,"num_read_ops":2,"bytes_written":3,"num_write_ops":4,"bytes_unmapped":0,"num_unmap_ops":0,"read_latency_ticks":7,"write_latency_ticks":8,"unmap_latency_ticks":0}]}}`},
 			codes.OK,
 			"",
 			true,
+		},
+		"valid request with unknown key": {
+			"unknown-id",
+			nil,
+			[]string{""},
+			codes.NotFound,
+			fmt.Sprintf("unable to find key %v", "unknown-id"),
+			false,
 		},
 	}
 
@@ -611,6 +690,8 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
+
+			testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolumeID] = &testNullVolume
 
 			request := &pb.NullDebugStatsRequest{Handle: &pc.ObjectKey{Value: tt.in}}
 			response, err := testEnv.client.NullDebugStats(testEnv.ctx, request)
@@ -623,7 +704,7 @@ func TestBackEnd_NullDebugStats(t *testing.T) {
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())
@@ -645,16 +726,16 @@ func TestBackEnd_DeleteNullDebug(t *testing.T) {
 		missing bool
 	}{
 		"valid request with invalid SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":false}`},
 			codes.InvalidArgument,
-			fmt.Sprintf("Could not delete Null Dev: %s", "mytest"),
+			fmt.Sprintf("Could not delete Null Dev: %s", testNullVolumeID),
 			true,
 			false,
 		},
 		"valid request with empty SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{""},
 			codes.Unknown,
@@ -663,7 +744,7 @@ func TestBackEnd_DeleteNullDebug(t *testing.T) {
 			false,
 		},
 		"valid request with ID mismatch SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":0,"error":{"code":0,"message":""},"result":false}`},
 			codes.Unknown,
@@ -672,7 +753,7 @@ func TestBackEnd_DeleteNullDebug(t *testing.T) {
 			false,
 		},
 		"valid request with error code from SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			nil,
 			[]string{`{"id":%d,"error":{"code":1,"message":"myopierr"},"result":false}`},
 			codes.Unknown,
@@ -681,7 +762,7 @@ func TestBackEnd_DeleteNullDebug(t *testing.T) {
 			false,
 		},
 		"valid request with valid SPDK response": {
-			"mytest",
+			testNullVolumeID,
 			&emptypb.Empty{},
 			[]string{`{"id":%d,"error":{"code":0,"message":""},"result":true}`}, // `{"jsonrpc": "2.0", "id": 1, "result": True}`,
 			codes.OK,
@@ -694,7 +775,7 @@ func TestBackEnd_DeleteNullDebug(t *testing.T) {
 			nil,
 			[]string{""},
 			codes.NotFound,
-			fmt.Sprintf("unable to find key %v", "unknown-id"),
+			fmt.Sprintf("unable to find key %v", server.ResourceIDToVolumeName("unknown-id")),
 			false,
 			false,
 		},
@@ -715,14 +796,15 @@ func TestBackEnd_DeleteNullDebug(t *testing.T) {
 			testEnv := createTestEnvironment(tt.start, tt.spdk)
 			defer testEnv.Close()
 
-			testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolume.Handle.Value] = &testNullVolume
+			fname1 := server.ResourceIDToVolumeName(tt.in)
+			testEnv.opiSpdkServer.Volumes.NullVolumes[testNullVolumeName] = &testNullVolume
 
-			request := &pb.DeleteNullDebugRequest{Name: tt.in, AllowMissing: tt.missing}
+			request := &pb.DeleteNullDebugRequest{Name: fname1, AllowMissing: tt.missing}
 			response, err := testEnv.client.DeleteNullDebug(testEnv.ctx, request)
 			if err != nil {
 				if er, ok := status.FromError(err); ok {
 					if er.Code() != tt.errCode {
-						t.Error("error code: expected", codes.InvalidArgument, "received", er.Code())
+						t.Error("error code: expected", tt.errCode, "received", er.Code())
 					}
 					if er.Message() != tt.errMsg {
 						t.Error("error message: expected", tt.errMsg, "received", er.Message())

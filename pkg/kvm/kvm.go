@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/opiproject/opi-spdk-bridge/pkg/frontend"
@@ -26,8 +27,12 @@ var (
 	errMonitorCreation        = status.Error(codes.Internal, "failed to create QEMU monitor")
 	errAddDeviceFailed        = status.Error(codes.FailedPrecondition, "couldn't add device")
 	errDeviceNotDeleted       = status.Error(codes.FailedPrecondition, "device is not deleted")
+	errNoController           = status.Error(codes.NotFound, "no controller found")
+	errInvalidSubsystem       = status.Error(codes.InvalidArgument, "invalid subsystem")
 	errDevicePartiallyDeleted = status.Error(codes.Internal, "device is partially deleted")
-	errFailedToCreateNvmeDir  = status.Error(codes.FailedPrecondition, "cannot create directory for NVMe controller")
+	errFailedToCreateNvmeDir  = status.Error(codes.FailedPrecondition, "cannot create directory for Nvme controller")
+	errDeviceEndpoint         = status.Error(codes.InvalidArgument, "values in endpoint cannot be used to calculate device location")
+	errNoPcieEndpoint         = status.Error(codes.InvalidArgument, "no pcie endpoint provided")
 )
 
 // Server is a wrapper for default opi-spdk-bridge frontend which automates
@@ -41,10 +46,12 @@ type Server struct {
 
 	timeout                time.Duration
 	pollDevicePresenceStep time.Duration
+
+	locator deviceLocator
 }
 
 // NewServer creates instance of KvmServer
-func NewServer(s *frontend.Server, qmpAddress string, ctrlrDir string) *Server {
+func NewServer(s *frontend.Server, qmpAddress string, ctrlrDir string, buses []string) *Server {
 	if s == nil {
 		log.Fatalf("Frontend Server cannot be nil")
 	}
@@ -64,7 +71,13 @@ func NewServer(s *frontend.Server, qmpAddress string, ctrlrDir string) *Server {
 
 	timeout := 2 * time.Second
 	pollDevicePresenceStep := 5 * time.Millisecond
-	return &Server{s, qmpAddress, ctrlrDir, qmpProtocol, timeout, pollDevicePresenceStep}
+	return &Server{s,
+		qmpAddress,
+		ctrlrDir,
+		qmpProtocol,
+		timeout,
+		pollDevicePresenceStep,
+		newDeviceLocator(buses)}
 }
 
 func getProtocol(qmpAddress string) (string, error) {
@@ -89,4 +102,10 @@ func isUnixSocketPath(qmpAddress string) bool {
 func isTCPAddress(qmpAddress string) bool {
 	_, _, err := net.SplitHostPort(qmpAddress)
 	return err == nil
+}
+
+func toQemuID(name string) string {
+	resourceID := filepath.Base(name)
+	// qemu id cannot start with numbers. Add prefix
+	return "opi-" + resourceID
 }

@@ -71,14 +71,18 @@ func (m *monitor) DeleteChardev(id string) error {
 	return m.rmon.ChardevRemove(id)
 }
 
-func (m *monitor) AddVirtioBlkDevice(id string, chardevID string) error {
+func (m *monitor) AddVirtioBlkDevice(id string, chardevID string, location deviceLocation) error {
 	qmpCmd := struct {
 		Driver  string  `json:"driver"`
 		ID      *string `json:"id,omitempty"`
+		Bus     *string `json:"bus,omitempty"`
+		Addr    *string `json:"addr,omitempty"`
 		Chardev *string `json:"chardev,omitempty"`
 	}{
 		Driver:  "vhost-user-blk-pci",
 		ID:      &id,
+		Bus:     location.Bus,
+		Addr:    location.Addr,
 		Chardev: &chardevID,
 	}
 	if err := m.addDevice(qmpCmd); err != nil {
@@ -87,15 +91,19 @@ func (m *monitor) AddVirtioBlkDevice(id string, chardevID string) error {
 	return m.waitForDeviceExist(id)
 }
 
-func (m *monitor) AddNvmeControllerDevice(id string, ctrlrDir string) error {
+func (m *monitor) AddNvmeControllerDevice(id string, ctrlrDir string, location deviceLocation) error {
 	socket := filepath.Join(ctrlrDir, "cntrl")
 	qmpCmd := struct {
 		Driver string  `json:"driver"`
 		ID     *string `json:"id,omitempty"`
+		Bus    *string `json:"bus,omitempty"`
+		Addr   *string `json:"addr,omitempty"`
 		Socket *string `json:"socket,omitempty"`
 	}{
 		Driver: "vfio-user-pci",
 		ID:     &id,
+		Bus:    location.Bus,
+		Addr:   location.Addr,
 		Socket: &socket,
 	}
 	if err := m.addDevice(qmpCmd); err != nil {
@@ -210,17 +218,31 @@ func (m *monitor) waitForDevicePresence(id string, shouldExist bool) error {
 }
 
 func (m *monitor) pciDeviceExist(id string) (bool, error) {
-	pciDevs, err := m.rmon.QueryPCI()
+	pci, err := m.rmon.QueryPCI()
 	if err != nil {
 		return false, err
 	}
 
-	for _, pciDev := range pciDevs {
-		for _, dev := range pciDev.Devices {
-			if dev.QdevID == id {
-				return true, nil
-			}
+	for _, pciDev := range pci {
+		if m.findDeviceWithID(pciDev.Devices, id) {
+			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func (m *monitor) findDeviceWithID(devs []qmpraw.PCIDeviceInfo, id string) bool {
+	for _, dev := range devs {
+		if dev.QdevID == id {
+			return true
+		}
+
+		if dev.PCIBridge != nil {
+			if m.findDeviceWithID(dev.PCIBridge.Devices, id) {
+				return true
+			}
+		}
+	}
+
+	return false
 }

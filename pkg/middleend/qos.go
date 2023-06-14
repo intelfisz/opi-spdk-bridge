@@ -8,40 +8,81 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/opiproject/gospdk/spdk"
 	pb "github.com/opiproject/opi-api/storage/v1alpha1/gen/go"
 	"github.com/opiproject/opi-spdk-bridge/pkg/server"
+
+	"go.einride.tech/aip/fieldbehavior"
+	"go.einride.tech/aip/resourceid"
+	"go.einride.tech/aip/resourcename"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+func sortQosVolumes(volumes []*pb.QosVolume) {
+	sort.Slice(volumes, func(i int, j int) bool {
+		return volumes[i].Name < volumes[j].Name
+	})
+}
 
 // CreateQosVolume creates a QoS volume
 func (s *Server) CreateQosVolume(_ context.Context, in *pb.CreateQosVolumeRequest) (*pb.QosVolume, error) {
 	log.Printf("CreateQosVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// see https://google.aip.dev/133#user-specified-ids
+	resourceID := resourceid.NewSystemGenerated()
+	if in.QosVolumeId != "" {
+		err := resourceid.ValidateUserSettable(in.QosVolumeId)
+		if err != nil {
+			log.Printf("error: %v", err)
+			return nil, err
+		}
+		log.Printf("client provided the ID of a resource %v, ignoring the name field %v", in.QosVolumeId, in.QosVolume.Name)
+		resourceID = in.QosVolumeId
+	}
+	in.QosVolume.Name = server.ResourceIDToVolumeName(resourceID)
+
 	if err := s.verifyQosVolume(in.QosVolume); err != nil {
 		log.Println("error:", err)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	if volume, ok := s.volumes.qosVolumes[in.QosVolume.QosVolumeId.Value]; ok {
-		log.Printf("Already existing QoS volume with id %v", in.QosVolume.QosVolumeId.Value)
+	if volume, ok := s.volumes.qosVolumes[in.QosVolume.Name]; ok {
+		log.Printf("Already existing QosVolume with name %v", in.QosVolume.Name)
 		return volume, nil
 	}
 
-	if err := s.setMaxLimit(in.QosVolume.VolumeId.Value, in.QosVolume.LimitMax); err != nil {
+	if err := s.setMaxLimit(in.QosVolume.VolumeId.Value, in.QosVolume.MaxLimit); err != nil {
 		return nil, err
 	}
 
-	s.volumes.qosVolumes[in.QosVolume.QosVolumeId.Value] = proto.Clone(in.QosVolume).(*pb.QosVolume)
-	return in.QosVolume, nil
+	response := server.ProtoClone(in.QosVolume)
+	s.volumes.qosVolumes[in.QosVolume.Name] = response
+	log.Printf("CreateQosVolume: Sending to client: %v", response)
+	return response, nil
 }
 
 // DeleteQosVolume deletes a QoS volume
 func (s *Server) DeleteQosVolume(_ context.Context, in *pb.DeleteQosVolumeRequest) (*emptypb.Empty, error) {
 	log.Printf("DeleteQosVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	qosVolume, ok := s.volumes.qosVolumes[in.Name]
 	if !ok {
 		if in.AllowMissing {
@@ -63,15 +104,26 @@ func (s *Server) DeleteQosVolume(_ context.Context, in *pb.DeleteQosVolumeReques
 // UpdateQosVolume updates a QoS volume
 func (s *Server) UpdateQosVolume(_ context.Context, in *pb.UpdateQosVolumeRequest) (*pb.QosVolume, error) {
 	log.Printf("UpdateQosVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	// if err := resourcename.Validate(in.QosVolume.Name); err != nil {
+	// 	log.Printf("error: %v", err)
+	// 	return nil, err
+	// }
+	// fetch object from the database
 	if err := s.verifyQosVolume(in.QosVolume); err != nil {
 		log.Println("error:", err)
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	qosVolumeID := in.QosVolume.QosVolumeId.Value
-	volume, ok := s.volumes.qosVolumes[qosVolumeID]
+	name := in.QosVolume.Name
+	volume, ok := s.volumes.qosVolumes[name]
 	if !ok {
-		log.Printf("Non-existing QoS volume with id %v", qosVolumeID)
-		return nil, status.Errorf(codes.NotFound, "volume_id %v does not exist", qosVolumeID)
+		log.Printf("Non-existing QoS volume with name %v", name)
+		return nil, status.Errorf(codes.NotFound, "unable to find key %s", name)
 	}
 
 	if volume.VolumeId.Value != in.QosVolume.VolumeId.Value {
@@ -81,18 +133,23 @@ func (s *Server) UpdateQosVolume(_ context.Context, in *pb.UpdateQosVolumeReques
 		return nil, status.Errorf(codes.InvalidArgument, msg)
 	}
 	log.Println("Set new max limit values")
-	if err := s.setMaxLimit(in.QosVolume.VolumeId.Value, in.QosVolume.LimitMax); err != nil {
+	if err := s.setMaxLimit(in.QosVolume.VolumeId.Value, in.QosVolume.MaxLimit); err != nil {
 		return nil, err
 	}
 
-	s.volumes.qosVolumes[qosVolumeID] = in.QosVolume
+	s.volumes.qosVolumes[name] = in.QosVolume
 	return in.QosVolume, nil
 }
 
 // ListQosVolumes lists QoS volumes
 func (s *Server) ListQosVolumes(_ context.Context, in *pb.ListQosVolumesRequest) (*pb.ListQosVolumesResponse, error) {
 	log.Printf("ListQosVolume: Received from client: %v", in)
-
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	size, offset, err := server.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if err != nil {
 		log.Printf("error: %v", err)
@@ -101,8 +158,9 @@ func (s *Server) ListQosVolumes(_ context.Context, in *pb.ListQosVolumesRequest)
 
 	volumes := []*pb.QosVolume{}
 	for _, qosVolume := range s.volumes.qosVolumes {
-		volumes = append(volumes, proto.Clone(qosVolume).(*pb.QosVolume))
+		volumes = append(volumes, server.ProtoClone(qosVolume))
 	}
+	sortQosVolumes(volumes)
 
 	token := ""
 	log.Printf("Limiting result len(%d) to [%d:%d]", len(volumes), offset, size)
@@ -118,6 +176,17 @@ func (s *Server) ListQosVolumes(_ context.Context, in *pb.ListQosVolumesRequest)
 // GetQosVolume gets a QoS volume
 func (s *Server) GetQosVolume(_ context.Context, in *pb.GetQosVolumeRequest) (*pb.QosVolume, error) {
 	log.Printf("GetQosVolume: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	if err := resourcename.Validate(in.Name); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// fetch object from the database
 	volume, ok := s.volumes.qosVolumes[in.Name]
 	if !ok {
 		err := status.Errorf(codes.NotFound, "unable to find key %s", in.Name)
@@ -130,6 +199,17 @@ func (s *Server) GetQosVolume(_ context.Context, in *pb.GetQosVolumeRequest) (*p
 // QosVolumeStats gets a QoS volume stats
 func (s *Server) QosVolumeStats(_ context.Context, in *pb.QosVolumeStatsRequest) (*pb.QosVolumeStatsResponse, error) {
 	log.Printf("QosVolumeStats: Received from client: %v", in)
+	// check required fields
+	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
+		log.Printf("error: %v", err)
+		return nil, err
+	}
+	// Validate that a resource name conforms to the restrictions outlined in AIP-122.
+	// if err := resourcename.Validate(in.VolumeId.Value); err != nil {
+	// 	log.Printf("error: %v", err)
+	// 	return nil, err
+	// }
+	// fetch object from the database
 	if in.VolumeId == nil || in.VolumeId.Value == "" {
 		return nil, status.Error(codes.InvalidArgument, "volume_id cannot be empty")
 	}
@@ -170,55 +250,55 @@ func (s *Server) QosVolumeStats(_ context.Context, in *pb.QosVolumeStatsRequest)
 }
 
 func (s *Server) verifyQosVolume(volume *pb.QosVolume) error {
-	if volume.QosVolumeId == nil || volume.QosVolumeId.Value == "" {
-		return fmt.Errorf("qos_volume_id cannot be empty")
+	if volume.Name == "" {
+		return fmt.Errorf("QoS volume name cannot be empty")
 	}
 	if volume.VolumeId == nil || volume.VolumeId.Value == "" {
 		return fmt.Errorf("volume_id cannot be empty")
 	}
 
-	if volume.LimitMin != nil {
-		return fmt.Errorf("QoS volume limit_min is not supported")
+	if volume.MinLimit != nil {
+		return fmt.Errorf("QoS volume min_limit is not supported")
 	}
-	if volume.LimitMax.RdIopsKiops != 0 {
-		return fmt.Errorf("QoS volume limit_max rd_iops_kiops is not supported")
+	if volume.MaxLimit.RdIopsKiops != 0 {
+		return fmt.Errorf("QoS volume max_limit rd_iops_kiops is not supported")
 	}
-	if volume.LimitMax.WrIopsKiops != 0 {
-		return fmt.Errorf("QoS volume limit_max wr_iops_kiops is not supported")
-	}
-
-	if volume.LimitMax.RdBandwidthMbs == 0 &&
-		volume.LimitMax.WrBandwidthMbs == 0 &&
-		volume.LimitMax.RwBandwidthMbs == 0 &&
-		volume.LimitMax.RdIopsKiops == 0 &&
-		volume.LimitMax.WrIopsKiops == 0 &&
-		volume.LimitMax.RwIopsKiops == 0 {
-		return fmt.Errorf("QoS volume limit_max should set limit")
+	if volume.MaxLimit.WrIopsKiops != 0 {
+		return fmt.Errorf("QoS volume max_limit wr_iops_kiops is not supported")
 	}
 
-	if volume.LimitMax.RwIopsKiops < 0 {
-		return fmt.Errorf("QoS volume limit_max rw_iops_kiops cannot be negative")
+	if volume.MaxLimit.RdBandwidthMbs == 0 &&
+		volume.MaxLimit.WrBandwidthMbs == 0 &&
+		volume.MaxLimit.RwBandwidthMbs == 0 &&
+		volume.MaxLimit.RdIopsKiops == 0 &&
+		volume.MaxLimit.WrIopsKiops == 0 &&
+		volume.MaxLimit.RwIopsKiops == 0 {
+		return fmt.Errorf("QoS volume max_limit should set limit")
 	}
-	if volume.LimitMax.RdBandwidthMbs < 0 {
-		return fmt.Errorf("QoS volume limit_max rd_bandwidth_mbs cannot be negative")
+
+	if volume.MaxLimit.RwIopsKiops < 0 {
+		return fmt.Errorf("QoS volume max_limit rw_iops_kiops cannot be negative")
 	}
-	if volume.LimitMax.WrBandwidthMbs < 0 {
-		return fmt.Errorf("QoS volume limit_max wr_bandwidth_mbs cannot be negative")
+	if volume.MaxLimit.RdBandwidthMbs < 0 {
+		return fmt.Errorf("QoS volume max_limit rd_bandwidth_mbs cannot be negative")
 	}
-	if volume.LimitMax.RwBandwidthMbs < 0 {
-		return fmt.Errorf("QoS volume limit_max rw_bandwidth_mbs cannot be negative")
+	if volume.MaxLimit.WrBandwidthMbs < 0 {
+		return fmt.Errorf("QoS volume max_limit wr_bandwidth_mbs cannot be negative")
+	}
+	if volume.MaxLimit.RwBandwidthMbs < 0 {
+		return fmt.Errorf("QoS volume max_limit rw_bandwidth_mbs cannot be negative")
 	}
 
 	return nil
 }
 
-func (s *Server) setMaxLimit(qosVolumeID string, limit *pb.QosLimit) error {
+func (s *Server) setMaxLimit(underlyingVolume string, limit *pb.QosLimit) error {
 	params := spdk.BdevQoSParams{
-		Name:           qosVolumeID,
+		Name:           underlyingVolume,
 		RwIosPerSec:    int(limit.RwIopsKiops * 1000),
 		RwMbytesPerSec: int(limit.RwBandwidthMbs),
 		RMbytesPerSec:  int(limit.RdBandwidthMbs),
-		WMbytesPerSec:  int(limit.RdBandwidthMbs),
+		WMbytesPerSec:  int(limit.WrBandwidthMbs),
 	}
 	var result spdk.BdevQoSResult
 	err := s.rpc.Call("bdev_set_qos_limit", &params, &result)
@@ -228,7 +308,7 @@ func (s *Server) setMaxLimit(qosVolumeID string, limit *pb.QosLimit) error {
 	}
 	log.Printf("Received from SPDK: %v", result)
 	if !result {
-		msg := fmt.Sprintf("Could not set max QoS limit: %s on %v", limit, qosVolumeID)
+		msg := fmt.Sprintf("Could not set max QoS limit: %s on %v", limit, underlyingVolume)
 		log.Print(msg)
 		return spdk.ErrUnexpectedSpdkCallResult
 	}
@@ -236,6 +316,6 @@ func (s *Server) setMaxLimit(qosVolumeID string, limit *pb.QosLimit) error {
 	return nil
 }
 
-func (s *Server) cleanMaxLimit(qosVolumeID string) error {
-	return s.setMaxLimit(qosVolumeID, &pb.QosLimit{})
+func (s *Server) cleanMaxLimit(underlyingVolume string) error {
+	return s.setMaxLimit(underlyingVolume, &pb.QosLimit{})
 }
