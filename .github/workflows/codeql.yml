@@ -2,45 +2,12 @@ name: 'CodeQL'
 
 on:
   workflow_dispatch:
-  workflow_call:
   push:
     branches: [ main ]
-
   pull_request:
     branches: [ main ]
 
 jobs:
-  CodeQL-Build:
-    # CodeQL runs on ubuntu-latest
-    runs-on: ubuntu-latest
-
-    permissions:
-      # required for all workflows
-      security-events: write
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      # Initializes the CodeQL tools for scanning.
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
-        with:
-           queries: security-extended,security-and-quality
-
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
-
-      # Create and upload for viewing a human-readable report
-      - name: Generate Security Report
-        uses: rsdmike/github-security-report-action@v3.0.4
-        with:
-          template: report
-          token: ${{ secrets.SECURITY_TOKEN }}
-
-      - name: GitHub Upload Release Artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: report
-          path: |
-           ./report.pdf
+  call:
+    uses: opiproject/opi-smbios-bridge/.github/workflows/codeql.yml@main
+    secrets: inherit
