@@ -38,6 +38,10 @@ func (s *Server) CreateVirtioScsiController(ctx context.Context, in *pb.CreateVi
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// see https://google.aip.dev/133#user-specified-ids
 	resourceID := resourceid.NewSystemGenerated()
 	if in.VirtioScsiControllerId != "" {
@@ -85,6 +89,10 @@ func (s *Server) DeleteVirtioScsiController(ctx context.Context, in *pb.DeleteVi
 	if err := resourcename.Validate(in.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	controller, ok := s.Virt.ScsiCtrls[in.Name]
 	if !ok {
@@ -121,8 +129,11 @@ func (s *Server) UpdateVirtioScsiController(_ context.Context, in *pb.UpdateVirt
 	if err := resourcename.Validate(in.VirtioScsiController.Name); err != nil {
 		return nil, err
 	}
-	// fetch object from the database
-	volume, ok := s.Virt.ScsiCtrls[in.VirtioScsiController.Name]
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// fetch object from the database	volume, ok := s.Virt.ScsiCtrls[in.VirtioScsiController.Name]
 	if !ok {
 		if in.AllowMissing {
 			log.Printf("TODO: in case of AllowMissing, create a new resource, don;t return error")
@@ -145,6 +156,10 @@ func (s *Server) ListVirtioScsiControllers(ctx context.Context, in *pb.ListVirti
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	size, offset, perr := utils.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
@@ -182,6 +197,10 @@ func (s *Server) GetVirtioScsiController(ctx context.Context, in *pb.GetVirtioSc
 	if err := resourcename.Validate(in.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.ScsiCtrls[in.Name]
 	if !ok {
@@ -215,6 +234,10 @@ func (s *Server) StatsVirtioScsiController(_ context.Context, in *pb.StatsVirtio
 	if err := resourcename.Validate(in.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.ScsiCtrls[in.Name]
 	if !ok {
@@ -236,6 +259,10 @@ func (s *Server) CreateVirtioScsiLun(ctx context.Context, in *pb.CreateVirtioScs
 	if err := resourcename.Validate(in.VirtioScsiLun.VolumeNameRef); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// see https://google.aip.dev/133#user-specified-ids
 	resourceID := resourceid.NewSystemGenerated()
 	if in.VirtioScsiLunId != "" {
@@ -286,6 +313,10 @@ func (s *Server) DeleteVirtioScsiLun(ctx context.Context, in *pb.DeleteVirtioScs
 	if err := resourcename.Validate(in.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	lun, ok := s.Virt.ScsiLuns[in.Name]
 	if !ok {
@@ -326,6 +357,10 @@ func (s *Server) UpdateVirtioScsiLun(_ context.Context, in *pb.UpdateVirtioScsiL
 	if err := resourcename.Validate(in.VirtioScsiLun.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.ScsiLuns[in.VirtioScsiLun.Name]
 	if !ok {
@@ -350,6 +385,10 @@ func (s *Server) ListVirtioScsiLuns(ctx context.Context, in *pb.ListVirtioScsiLu
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	size, offset, perr := utils.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
@@ -388,6 +427,10 @@ func (s *Server) GetVirtioScsiLun(ctx context.Context, in *pb.GetVirtioScsiLunRe
 	if err := resourcename.Validate(in.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.ScsiLuns[in.Name]
 	if !ok {
@@ -421,6 +464,10 @@ func (s *Server) StatsVirtioScsiLun(_ context.Context, in *pb.StatsVirtioScsiLun
 	if err := resourcename.Validate(in.Name); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.ScsiLuns[in.Name]
 	if !ok {

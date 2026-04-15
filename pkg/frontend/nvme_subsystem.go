@@ -38,6 +38,10 @@ func (s *Server) CreateNvmeSubsystem(ctx context.Context, in *pb.CreateNvmeSubsy
 	if err := s.validateCreateNvmeSubsystemRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// see https://google.aip.dev/133#user-specified-ids
 	resourceID := resourceid.NewSystemGenerated()
 	if in.NvmeSubsystemId != "" {
@@ -127,6 +131,10 @@ func (s *Server) DeleteNvmeSubsystem(ctx context.Context, in *pb.DeleteNvmeSubsy
 	if err := s.validateDeleteNvmeSubsystemRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	subsys, ok := s.Nvme.Subsystems[in.Name]
 	if !ok {
@@ -159,6 +167,10 @@ func (s *Server) UpdateNvmeSubsystem(_ context.Context, in *pb.UpdateNvmeSubsyst
 	if err := s.validateUpdateNvmeSubsystemRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	subsys, ok := s.Nvme.Subsystems[in.NvmeSubsystem.Name]
 	if !ok {
@@ -183,6 +195,10 @@ func (s *Server) ListNvmeSubsystems(ctx context.Context, in *pb.ListNvmeSubsyste
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	size, offset, perr := utils.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
@@ -216,6 +232,10 @@ func (s *Server) GetNvmeSubsystem(ctx context.Context, in *pb.GetNvmeSubsystemRe
 	if err := s.validateGetNvmeSubsystemRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	subsys, ok := s.Nvme.Subsystems[in.Name]
 	if !ok {
@@ -246,6 +266,10 @@ func (s *Server) StatsNvmeSubsystem(ctx context.Context, in *pb.StatsNvmeSubsyst
 	if err := s.validateStatsNvmeSubsystemRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	subsys, ok := s.Nvme.Subsystems[in.Name]
 	if !ok {

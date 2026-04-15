@@ -38,6 +38,10 @@ func (s *Server) CreateVirtioBlk(ctx context.Context, in *pb.CreateVirtioBlkRequ
 	if err := s.validateCreateVirtioBlkRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// see https://google.aip.dev/133#user-specified-ids
 	resourceID := resourceid.NewSystemGenerated()
 	if in.VirtioBlkId != "" {
@@ -80,6 +84,10 @@ func (s *Server) DeleteVirtioBlk(ctx context.Context, in *pb.DeleteVirtioBlkRequ
 	if err := s.validateDeleteVirtioBlkRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	controller, ok := s.Virt.BlkCtrls[in.Name]
 	if !ok {
@@ -116,6 +124,10 @@ func (s *Server) UpdateVirtioBlk(_ context.Context, in *pb.UpdateVirtioBlkReques
 	if err := s.validateUpdateVirtioBlkRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.BlkCtrls[in.VirtioBlk.Name]
 	if !ok {
@@ -140,6 +152,10 @@ func (s *Server) ListVirtioBlks(ctx context.Context, in *pb.ListVirtioBlksReques
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	size, offset, perr := utils.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
@@ -181,6 +197,10 @@ func (s *Server) GetVirtioBlk(ctx context.Context, in *pb.GetVirtioBlkRequest) (
 	if err := s.validateGetVirtioBlkRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.BlkCtrls[in.Name]
 	if !ok {
@@ -218,6 +238,10 @@ func (s *Server) StatsVirtioBlk(_ context.Context, in *pb.StatsVirtioBlkRequest)
 	if err := s.validateStatsVirtioBlkRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	volume, ok := s.Virt.BlkCtrls[in.Name]
 	if !ok {

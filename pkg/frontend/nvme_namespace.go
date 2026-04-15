@@ -37,6 +37,10 @@ func (s *Server) CreateNvmeNamespace(ctx context.Context, in *pb.CreateNvmeNames
 	if err := s.validateCreateNvmeNamespaceRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// see https://google.aip.dev/133#user-specified-ids
 	resourceID := resourceid.NewSystemGenerated()
 	if in.NvmeNamespaceId != "" {
@@ -93,6 +97,10 @@ func (s *Server) DeleteNvmeNamespace(ctx context.Context, in *pb.DeleteNvmeNames
 	if err := s.validateDeleteNvmeNamespaceRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	namespace, ok := s.Nvme.Namespaces[in.Name]
 	if !ok {
@@ -133,6 +141,10 @@ func (s *Server) UpdateNvmeNamespace(_ context.Context, in *pb.UpdateNvmeNamespa
 	if err := s.validateUpdateNvmeNamespaceRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	namespace, ok := s.Nvme.Namespaces[in.NvmeNamespace.Name]
 	if !ok {
@@ -164,6 +176,10 @@ func (s *Server) ListNvmeNamespaces(ctx context.Context, in *pb.ListNvmeNamespac
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	size, offset, perr := utils.ExtractPagination(in.PageSize, in.PageToken, s.Pagination)
 	if perr != nil {
@@ -216,6 +232,10 @@ func (s *Server) GetNvmeNamespace(ctx context.Context, in *pb.GetNvmeNamespaceRe
 	if err := s.validateGetNvmeNamespaceRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	namespace, ok := s.Nvme.Namespaces[in.Name]
 	if !ok {
@@ -269,6 +289,10 @@ func (s *Server) StatsNvmeNamespace(_ context.Context, in *pb.StatsNvmeNamespace
 	if err := s.validateStatsNvmeNamespaceRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	namespace, ok := s.Nvme.Namespaces[in.Name]
 	if !ok {

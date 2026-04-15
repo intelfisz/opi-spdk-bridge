@@ -37,6 +37,10 @@ func (s *Server) CreateNvmeController(ctx context.Context, in *pb.CreateNvmeCont
 	if err := s.validateCreateNvmeControllerRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// see https://google.aip.dev/133#user-specified-ids
 	resourceID := resourceid.NewSystemGenerated()
 	if in.NvmeControllerId != "" {
@@ -82,6 +86,10 @@ func (s *Server) DeleteNvmeController(ctx context.Context, in *pb.DeleteNvmeCont
 	if err := s.validateDeleteNvmeControllerRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	controller, ok := s.Nvme.Controllers[in.Name]
 	if !ok {
@@ -119,6 +127,10 @@ func (s *Server) UpdateNvmeController(_ context.Context, in *pb.UpdateNvmeContro
 	if err := s.validateUpdateNvmeControllerRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	ctrlr, ok := s.Nvme.Controllers[in.NvmeController.Name]
 	if !ok {
@@ -146,6 +158,10 @@ func (s *Server) ListNvmeControllers(_ context.Context, in *pb.ListNvmeControlle
 	if err := fieldbehavior.ValidateRequiredFields(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	// fetch object from the database
 	Blobarray := []*pb.NvmeController{}
 	for _, controller := range s.Nvme.Controllers {
@@ -163,6 +179,10 @@ func (s *Server) GetNvmeController(_ context.Context, in *pb.GetNvmeControllerRe
 	if err := s.validateGetNvmeControllerRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	controller, ok := s.Nvme.Controllers[in.Name]
 	if !ok {
@@ -178,6 +198,10 @@ func (s *Server) StatsNvmeController(_ context.Context, in *pb.StatsNvmeControll
 	if err := s.validateStatsNvmeControllerRequest(in); err != nil {
 		return nil, err
 	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
 	// fetch object from the database
 	ctrlr, ok := s.Nvme.Controllers[in.Name]
 	if !ok {

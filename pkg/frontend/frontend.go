@@ -7,6 +7,7 @@ package frontend
 
 import (
 	"log"
+	"sync"
 
 	"github.com/philippgille/gokv"
 
@@ -37,6 +38,7 @@ type Server struct {
 	pb.UnimplementedFrontendVirtioBlkServiceServer
 	pb.UnimplementedFrontendVirtioScsiServiceServer
 
+	mu         sync.RWMutex
 	rpc        spdk.JSONRPC
 	store      gokv.Store
 	Nvme       NvmeParameters
